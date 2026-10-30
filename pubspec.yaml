@@ -41,6 +41,7 @@ dependencies:
   uuid: ^4.6.0
   sqlite3: ^3.5.2
   material_symbols_icons: ^4.2960.0
+  signals_flutter: ^7.1.0
 
 dev_dependencies:
   flutter_test:

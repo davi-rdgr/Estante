@@ -1,7 +1,7 @@
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
+import 'package:signals_flutter/signals_flutter.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'package:uuid/uuid.dart';
 
@@ -13,9 +13,12 @@ typedef PageCounter = Future<int> Function(String pdfPath);
 
 /// Guarda a biblioteca num SQLite e mantém uma cópia em memória
 /// para a UI (a biblioteca de um músico cabe tranquilo na memória).
-class ScoreRepository extends ChangeNotifier {
+/// A cópia é um signal: quem lê [scores] dentro de um build ou
+/// computed é atualizado sozinho quando o banco muda.
+class ScoreRepository {
   ScoreRepository._(this.storage, this._db, this._pageCounter) {
     _reload();
+    _deleteOrphanFiles();
   }
 
   final AppStorage storage;
@@ -23,8 +26,8 @@ class ScoreRepository extends ChangeNotifier {
   final PageCounter _pageCounter;
   final _uuid = const Uuid();
 
-  List<Score> _scores = [];
-  List<Score> get scores => List.unmodifiable(_scores);
+  final _scores = signal<List<Score>>(const []);
+  FlutterReadonlySignal<List<Score>> get scores => _scores;
 
   static const _schemaVersion = 1;
 
@@ -60,22 +63,21 @@ class ScoreRepository extends ChangeNotifier {
 
   void _reload() {
     final rows = _db.select('SELECT * FROM scores');
-    _scores = [for (final row in rows) Score.fromRow(row)];
-    notifyListeners();
+    _scores.value = List.unmodifiable([for (final row in rows) Score.fromRow(row)]);
   }
 
   Score? byId(String id) {
-    for (final s in _scores) {
+    for (final s in _scores.value) {
       if (s.id == id) return s;
     }
     return null;
   }
 
   /// Todas as tags usadas, em ordem alfabética.
-  List<String> get allTags {
-    final set = <String>{for (final s in _scores) ...s.tags};
+  late final FlutterReadonlySignal<List<String>> allTags = computed(() {
+    final set = <String>{for (final s in _scores.value) ...s.tags};
     return set.toList()..sort((a, b) => normalizeForSearch(a).compareTo(normalizeForSearch(b)));
-  }
+  });
 
   /// Copia o PDF para a pasta do app e cria a entrada na biblioteca.
   Future<Score> importPdf(String sourcePath) async {
@@ -131,18 +133,41 @@ class ScoreRepository extends ChangeNotifier {
 
   Future<void> delete(Score score) async {
     _db.execute('DELETE FROM scores WHERE id = ?', [score.id]);
-    for (final path in [storage.pdfPath(score.fileName), storage.annotationsPath(score.id)]) {
-      final file = File(path);
-      if (await file.exists()) await file.delete();
-    }
+    // Atualiza a lista antes de mexer nos arquivos: no Windows o PDF pode
+    // estar travado (a miniatura ainda está com ele aberto), e a falha ao
+    // apagar não pode impedir a partitura de sumir da biblioteca.
     _reload();
+    for (final path in [storage.pdfPath(score.fileName), storage.annotationsPath(score.id)]) {
+      try {
+        await File(path).delete();
+      } on FileSystemException {
+        // Não existe ou está em uso: sobra como órfão e sai na próxima abertura.
+      }
+    }
   }
 
-  @override
-  void dispose() {
-    _db.close();
-    super.dispose();
+  /// Apaga PDFs e anotações que não pertencem a nenhuma partitura
+  /// (sobras de exclusões em que o arquivo estava em uso).
+  void _deleteOrphanFiles() {
+    final pdfs = {for (final s in _scores.value) s.fileName};
+    final ids = {for (final s in _scores.value) s.id};
+    // Anotações: "<id>.json" e o temporário "<id>.json.tmp".
+    final orphans = [
+      for (final f in storage.filesDir.listSync().whereType<File>())
+        if (!pdfs.contains(p.basename(f.path))) f,
+      for (final f in storage.annotationsDir.listSync().whereType<File>())
+        if (!ids.contains(p.basename(f.path).split('.').first)) f,
+    ];
+    for (final file in orphans) {
+      try {
+        file.deleteSync();
+      } on FileSystemException {
+        // Fica para a próxima.
+      }
+    }
   }
+
+  void dispose() => _db.close();
 }
 
 /// "bach_suite-1_preludio.pdf" → "bach suite 1 preludio"

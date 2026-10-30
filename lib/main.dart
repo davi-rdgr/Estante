@@ -3,6 +3,7 @@ import 'package:pdfrx/pdfrx.dart';
 
 import 'data/app_storage.dart';
 import 'data/score_repository.dart';
+import 'screens/library_controller.dart';
 import 'screens/library_screen.dart';
 import 'theme/app_theme.dart';
 
@@ -13,7 +14,7 @@ Future<void> main() async {
   final storage = await AppStorage.open();
   final repository = ScoreRepository.open(storage, pageCounter: _countPages);
 
-  runApp(PartiturasApp(repository: repository));
+  runApp(PartiturasApp(library: LibraryController(repository)));
 }
 
 Future<int> _countPages(String path) async {
@@ -26,9 +27,9 @@ Future<int> _countPages(String path) async {
 }
 
 class PartiturasApp extends StatelessWidget {
-  const PartiturasApp({super.key, required this.repository});
+  const PartiturasApp({super.key, required this.library});
 
-  final ScoreRepository repository;
+  final LibraryController library;
 
   @override
   Widget build(BuildContext context) {
@@ -37,7 +38,7 @@ class PartiturasApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
       darkTheme: AppTheme.dark,
-      home: LibraryScreen(repository: repository),
+      home: LibraryScreen(controller: library),
     );
   }
 }

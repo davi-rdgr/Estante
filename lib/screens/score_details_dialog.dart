@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:signals_flutter/signals_flutter.dart';
 
 import '../data/score.dart';
 import '../theme/app_icons.dart';
@@ -13,7 +14,10 @@ Future<Score?> showScoreDetailsDialog(BuildContext context, Score score, {List<S
   );
 }
 
-class _ScoreDetailsDialog extends StatefulWidget {
+/// Continua stateful só porque é dono dos TextEditingControllers, que
+/// precisam ser descartados quando o diálogo sai da tela (depois da
+/// animação de saída). O resto do estado é signal.
+class _ScoreDetailsDialog extends SignalStatefulWidget {
   const _ScoreDetailsDialog({required this.score, required this.knownTags});
 
   final Score score;
@@ -30,8 +34,8 @@ class _ScoreDetailsDialogState extends State<_ScoreDetailsDialog> {
   late final _instrument = TextEditingController(text: widget.score.instrument);
   late final _key = TextEditingController(text: widget.score.musicalKey);
   final _tagInput = TextEditingController();
-  late final List<String> _tags = [...widget.score.tags];
-  late bool _favorite = widget.score.favorite;
+  late final _tags = signal<List<String>>(widget.score.tags);
+  late final _favorite = signal(widget.score.favorite);
 
   @override
   void dispose() {
@@ -42,14 +46,15 @@ class _ScoreDetailsDialogState extends State<_ScoreDetailsDialog> {
   }
 
   void _addTag(String raw) {
+    final tags = [..._tags.value];
     for (final part in raw.split(',')) {
       final tag = part.trim();
-      if (tag.isNotEmpty && !_tags.any((t) => normalizeForSearch(t) == normalizeForSearch(tag))) {
-        _tags.add(tag);
+      if (tag.isNotEmpty && !tags.any((t) => normalizeForSearch(t) == normalizeForSearch(tag))) {
+        tags.add(tag);
       }
     }
+    _tags.value = tags;
     _tagInput.clear();
-    setState(() {});
   }
 
   void _save() {
@@ -62,15 +67,16 @@ class _ScoreDetailsDialogState extends State<_ScoreDetailsDialog> {
         composer: _composer.text.trim(),
         instrument: _instrument.text.trim(),
         musicalKey: _key.text.trim(),
-        tags: _tags,
-        favorite: _favorite,
+        tags: _tags.value,
+        favorite: _favorite.value,
       ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    final suggestions = widget.knownTags.where((t) => !_tags.contains(t)).toList();
+    final tags = _tags.value;
+    final suggestions = widget.knownTags.where((t) => !tags.contains(t)).toList();
     return AlertDialog(
       title: const Text('Informações da partitura'),
       content: SizedBox(
@@ -124,13 +130,13 @@ class _ScoreDetailsDialogState extends State<_ScoreDetailsDialog> {
                     spacing: 6,
                     runSpacing: 6,
                     children: [
-                      for (final tag in _tags)
-                        InputChip(label: Text(tag), onDeleted: () => setState(() => _tags.remove(tag))),
+                      for (final tag in tags)
+                        InputChip(label: Text(tag), onDeleted: () => _tags.value = [...tags]..remove(tag)),
                       for (final tag in suggestions.take(12))
                         ActionChip(
                           avatar: const Icon(AppIcons.add, size: 16),
                           label: Text(tag),
-                          onPressed: () => setState(() => _tags.add(tag)),
+                          onPressed: () => _tags.value = [...tags, tag],
                         ),
                     ],
                   ),
@@ -138,8 +144,8 @@ class _ScoreDetailsDialogState extends State<_ScoreDetailsDialog> {
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Favorita'),
-                  value: _favorite,
-                  onChanged: (v) => setState(() => _favorite = v),
+                  value: _favorite.value,
+                  onChanged: (v) => _favorite.value = v,
                 ),
               ],
             ),

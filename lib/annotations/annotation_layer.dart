@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:signals_flutter/signals_flutter.dart';
 
 import 'annotation_controller.dart';
 import 'annotation_models.dart';
@@ -11,59 +12,54 @@ import 'annotation_models.dart';
 ///
 /// Usa [Listener] (eventos crus) em vez de GestureDetector para não
 /// disputar a arena de gestos com o zoom do InteractiveViewer.
-class AnnotationLayer extends StatefulWidget {
+///
+/// O build só depende da ferramenta; traços novos não reconstroem nada,
+/// o [AnnotationPainter] repinta direto quando os signals mudam.
+class AnnotationLayer extends SignalWidget {
   const AnnotationLayer({super.key, required this.controller, required this.pageNumber});
 
   final AnnotationController controller;
   final int pageNumber;
 
-  @override
-  State<AnnotationLayer> createState() => _AnnotationLayerState();
-}
-
-class _AnnotationLayerState extends State<AnnotationLayer> {
   static const _eraserRadius = 10.0;
-  bool _erasing = false;
-  Offset? _lastErase;
-  int? _pointer;
 
-  AnnotationController get _c => widget.controller;
+  AnnotationController get _c => controller;
 
   Offset _normalize(Offset local, Size size) =>
       Offset((local.dx / size.width).clamp(0.0, 1.0), (local.dy / size.height).clamp(0.0, 1.0));
 
   void _onDown(PointerDownEvent e, Size size) {
-    if (_pointer != null) return; // ignora segundo dedo
+    if (_c.activePointer != null) return; // ignora segundo dedo
     final point = _normalize(e.localPosition, size);
     final secondary = e.buttons & kSecondaryMouseButton != 0;
     final eraserTip = e.kind == PointerDeviceKind.invertedStylus;
 
-    if (secondary || eraserTip || _c.tool == AnnotationTool.eraser) {
-      _pointer = e.pointer;
-      _erasing = true;
-      _lastErase = e.localPosition;
-      _c.eraseAt(widget.pageNumber, point, _eraserRadius, size);
+    if (secondary || eraserTip || _c.tool.value == AnnotationTool.eraser) {
+      _c.activePointer = e.pointer;
+      _c.erasing = true;
+      _c.lastErase = e.localPosition;
+      _c.eraseAt(pageNumber, point, _eraserRadius, size);
       return;
     }
     if (e.buttons & kPrimaryButton == 0) return;
 
-    switch (_c.tool) {
+    switch (_c.tool.value) {
       case AnnotationTool.pen || AnnotationTool.highlighter:
-        _pointer = e.pointer;
-        _c.beginStroke(widget.pageNumber, point);
+        _c.activePointer = e.pointer;
+        _c.beginStroke(pageNumber, point);
       case AnnotationTool.text:
-        _pointer = e.pointer;
+        _c.activePointer = e.pointer;
       case AnnotationTool.eraser || null:
         break;
     }
   }
 
   void _onMove(PointerMoveEvent e, Size size) {
-    if (e.pointer != _pointer) return;
+    if (e.pointer != _c.activePointer) return;
     final point = _normalize(e.localPosition, size);
-    if (_erasing) {
-      _eraseAlong(_lastErase ?? e.localPosition, e.localPosition, size);
-      _lastErase = e.localPosition;
+    if (_c.erasing) {
+      _eraseAlong(_c.lastErase ?? e.localPosition, e.localPosition, size);
+      _c.lastErase = e.localPosition;
     } else {
       _c.extendStroke(point);
     }
@@ -75,95 +71,94 @@ class _AnnotationLayerState extends State<AnnotationLayer> {
     final steps = math.max(1, ((to - from).distance / (_eraserRadius / 2)).ceil());
     for (var i = 1; i <= steps; i++) {
       final local = Offset.lerp(from, to, i / steps)!;
-      _c.eraseAt(widget.pageNumber, _normalize(local, size), _eraserRadius, size);
+      _c.eraseAt(pageNumber, _normalize(local, size), _eraserRadius, size);
     }
   }
 
-  Future<void> _onUp(PointerUpEvent e, Size size) async {
-    if (e.pointer != _pointer) return;
-    _pointer = null;
-    if (_erasing) {
-      _erasing = false;
+  Future<void> _onUp(BuildContext context, PointerUpEvent e, Size size) async {
+    if (e.pointer != _c.activePointer) return;
+    _c.activePointer = null;
+    if (_c.erasing) {
+      _c.erasing = false;
       return;
     }
-    if (_c.tool == AnnotationTool.text) {
-      await _editText(_normalize(e.localPosition, size), size);
+    if (_c.tool.value == AnnotationTool.text) {
+      await _editText(context, _normalize(e.localPosition, size), size);
       return;
     }
     _c.endStroke();
   }
 
   void _onCancel(PointerCancelEvent e) {
-    if (e.pointer != _pointer) return;
-    _pointer = null;
-    _erasing = false;
+    if (e.pointer != _c.activePointer) return;
+    _c.activePointer = null;
+    _c.erasing = false;
     _c.cancelStroke();
   }
 
-  Future<void> _editText(Offset point, Size size) async {
-    final existing = _c.textAt(widget.pageNumber, point, size);
+  Future<void> _editText(BuildContext context, Offset point, Size size) async {
+    final existing = _c.textAt(pageNumber, point, size);
     final text = await showDialog<String>(
       context: context,
       builder: (context) => _TextDialog(initial: existing?.text ?? ''),
     );
-    if (text == null || !mounted) return;
+    if (text == null || !context.mounted) return;
     if (existing != null) {
-      _c.replaceText(widget.pageNumber, existing, text);
+      _c.replaceText(pageNumber, existing, text);
     } else {
-      _c.addText(widget.pageNumber, point, text);
+      _c.addText(pageNumber, point, text);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    // Lido aqui, fora do LayoutBuilder: só o que é lido direto no build
+    // é rastreado (o builder do LayoutBuilder roda depois, no layout).
+    final tool = _c.tool.value;
     return LayoutBuilder(
       builder: (context, constraints) {
         final size = constraints.biggest;
-        return ListenableBuilder(
-          listenable: _c,
-          builder: (context, _) {
-            final painter = CustomPaint(
-              size: size,
-              painter: AnnotationPainter(
-                items: _c.itemsFor(widget.pageNumber),
-                activeStroke: _c.activePage == widget.pageNumber ? _c.activeStroke : null,
-              ),
-            );
-            if (!_c.isEditing) return painter;
-            return MouseRegion(
-              cursor: switch (_c.tool) {
-                AnnotationTool.text => SystemMouseCursors.text,
-                AnnotationTool.eraser => SystemMouseCursors.disappearing,
-                _ => SystemMouseCursors.precise,
-              },
-              child: Listener(
-                behavior: HitTestBehavior.opaque,
-                onPointerDown: (e) => _onDown(e, size),
-                onPointerMove: (e) => _onMove(e, size),
-                onPointerUp: (e) => _onUp(e, size),
-                onPointerCancel: _onCancel,
-                child: painter,
-              ),
-            );
+        final painter = CustomPaint(
+          size: size,
+          painter: AnnotationPainter(controller: _c, pageNumber: pageNumber),
+        );
+        if (tool == null) return painter;
+        return MouseRegion(
+          cursor: switch (tool) {
+            AnnotationTool.text => SystemMouseCursors.text,
+            AnnotationTool.eraser => SystemMouseCursors.disappearing,
+            _ => SystemMouseCursors.precise,
           },
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: (e) => _onDown(e, size),
+            onPointerMove: (e) => _onMove(e, size),
+            onPointerUp: (e) => _onUp(context, e, size),
+            onPointerCancel: _onCancel,
+            child: painter,
+          ),
         );
       },
     );
   }
 }
 
+/// Pinta as anotações de uma página. Escuta os signals de itens e do
+/// traço ativo como `repaint`: cada ponto novo só repinta, sem rebuild.
 class AnnotationPainter extends CustomPainter {
-  AnnotationPainter({required this.items, this.activeStroke});
+  AnnotationPainter({required this.controller, required this.pageNumber})
+    : super(repaint: Listenable.merge([controller.pages, controller.activeStroke]));
 
-  final List<AnnotationItem> items;
-  final InkStroke? activeStroke;
+  final AnnotationController controller;
+  final int pageNumber;
 
   @override
   void paint(Canvas canvas, Size size) {
-    for (final item in items) {
+    for (final item in controller.itemsFor(pageNumber)) {
       _paintItem(canvas, size, item);
     }
-    if (activeStroke != null) _paintItem(canvas, size, activeStroke!);
+    final active = controller.activeStroke.value;
+    if (active != null && active.page == pageNumber) _paintItem(canvas, size, active.stroke);
   }
 
   void _paintItem(Canvas canvas, Size size, AnnotationItem item) {
@@ -220,10 +215,10 @@ class AnnotationPainter extends CustomPainter {
     painter.dispose();
   }
 
+  // Mudanças de conteúdo chegam pelo `repaint`; aqui só importa se é outra página.
   @override
   bool shouldRepaint(AnnotationPainter oldDelegate) =>
-      // O traço ativo é mutado no lugar, então sempre repinta enquanto existe.
-      activeStroke != null || oldDelegate.activeStroke != null || !identical(items, oldDelegate.items);
+      !identical(controller, oldDelegate.controller) || pageNumber != oldDelegate.pageNumber;
 }
 
 class _TextDialog extends StatefulWidget {

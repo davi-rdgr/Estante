@@ -23,10 +23,26 @@ lib/
     annotation_controller.dart       ferramentas, desfazer/refazer, autosave em JSON
     annotation_layer.dart            camada de desenho por cima da página + painter
   screens/
+    library_controller.dart          estado da biblioteca: busca, filtros, ordenação (signals)
     library_screen.dart              biblioteca: grade, busca, tags, favoritas, ordenação
     score_details_dialog.dart        editar título, compositor, instrumento, tom, tags
+    viewer_controller.dart           estado do leitor: PDF, página, 1/2 páginas, zoom
     viewer_screen.dart               leitor 1 ou 2 páginas, zoom, atalhos, barra de anotação
 ```
+
+## Estado (signals)
+
+O estado é feito com [`signals_flutter`](https://pub.dev/packages/signals_flutter), sem `ChangeNotifier` nem `setState`:
+
+- Controllers (`*_controller.dart`, `ScoreRepository`) expõem `signal`/`computed`.
+- Widgets estendem `SignalWidget` (ou `SignalStatefulWidget` quando precisam ser donos de
+  algo descartável) e se reconstroem sozinhos quando um `.value` lido no build muda.
+- Só é rastreado o que é lido **direto no build**. Builders que rodam depois (`LayoutBuilder`,
+  `itemBuilder` de listas) não contam: leia antes ou use um `SignalBuilder`.
+- Signals usam `==`: listas e mapas são trocados por novos, nunca mutados no lugar
+  (exceção: o traço ativo, que usa `set(..., force: true)`).
+- Coisas que redesenham a cada frame (traço da caneta) usam o signal como `repaint` do
+  `CustomPainter`, sem rebuild.
 
 Os PDFs importados são copiados para a pasta do app; o original nunca é alterado.
 As anotações ficam em `annotations/<id>.json`.
